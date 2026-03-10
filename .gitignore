@@ -1,0 +1,19 @@
+# Окружение
+.env
+venv/
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+
+# Временные аудиофайлы
+*.mp3
+
+# БД и логи
+*.db
+*.log
+
+# IDE
+.idea/
+.vscode/
+*.swp
