@@ -5,6 +5,7 @@ import logging
 from typing import Optional
 from pathlib import Path
 import yt_dlp
+import traceback
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 TMP_DIR = BASE_DIR / "tmp"
@@ -15,11 +16,12 @@ def _build_query(title: str, artist: str) -> str:
     return f"ytsearch1:{artist} {title} audio"
 
 def _download_sync(query: str, output_path: str) -> Optional[str]:
+    logging.info("yt-dlp start, query=%r, output=%r", query, output_path)
     ydl_opts = {
         "format": "bestaudio/best",
         "outtmpl": output_path,
-        "quiet": True,
-        "no_warnings": True,
+        "quiet": False,          # временно включим вывод
+        "no_warnings": False,    # чтобы видеть предупреждения
         "noplaylist": True,
         "postprocessors": [
             {
@@ -37,9 +39,14 @@ def _download_sync(query: str, output_path: str) -> Optional[str]:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             ydl.download([query])
         mp3 = output_path + ".mp3"
-        return mp3 if os.path.exists(mp3) else None
+        if os.path.exists(mp3):
+            logging.info("yt-dlp success, file=%r", mp3)
+            return mp3
+        logging.error("yt-dlp finished but file not found: %r", mp3)
+        return None
     except Exception as e:
-        logging.error("yt-dlp error: %s", e)
+        logging.error("yt-dlp error for query %r: %s", query, e)
+        logging.error("traceback:\n%s", traceback.format_exc())
         return None
 
 async def download_track(track_id: int, title: str = "", artist: str = "") -> Optional[str]:
