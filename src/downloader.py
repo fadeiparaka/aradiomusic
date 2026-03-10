@@ -13,7 +13,7 @@ TMP_DIR.mkdir(exist_ok=True)
 
 
 def _build_query(title: str, artist: str) -> str:
-    return f"ytsearch1:{artist} {title} audio"
+    return f"ytsearch1:{artist} {title} official audio"
 
 def _download_sync(query: str, output_path: str) -> Optional[str]:
     logging.info("yt-dlp start, query=%r, output=%r", query, output_path)
