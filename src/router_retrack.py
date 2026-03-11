@@ -17,10 +17,10 @@ router = Router()
 
 # Сообщения
 MSG_RETRACK_HEADER = "Замените <b>{artist} — {title}</b>:"
-MSG_RETRACK_NOT_FOUND = "❌ Не нашёл трек для замены. Ответь на аудио-сообщение бота."
-MSG_RETRACK_SEARCHING = "Ищу варианты замены..."
-MSG_RETRACK_NO_RESULTS = "❌ Ничего не нашёл на YouTube."
-MSG_RETRACK_DOWNLOADING = "Скачиваю выбранный вариант..."
+MSG_RETRACK_NOT_FOUND = "❌ Ответь на недавнюю музыку. Я понимаю только последнее."
+MSG_RETRACK_SEARCHING = "Меняю..."
+MSG_RETRACK_NO_RESULTS = "❌ Ниче не нашёл."
+MSG_RETRACK_DOWNLOADING = "Ща-ща..."
 
 
 def _search_youtube_candidates(query: str, limit: int = 50) -> list[dict]:
