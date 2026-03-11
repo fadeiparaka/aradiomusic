@@ -20,8 +20,9 @@ def _download_sync(query: str, output_path: str) -> Optional[str]:
     ydl_opts = {
         "format": "bestaudio/best",
         "outtmpl": output_path,
-        "quiet": True,          # временно включим вывод
-        "no_warnings": False,    # чтобы видеть предупреждения
+        "quiet": True,
+        "no_warnings": True, 
+        "verbose": False,
         "noplaylist": True,
         "postprocessors": [
             {

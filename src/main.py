@@ -7,7 +7,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from aiogram import Bot, Dispatcher
 from src.config import BOT_TOKEN
-from src.router_search import router
+from src.router_search import router as search_router
+from src.router_retrack import router as retrack_router
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
@@ -15,7 +16,10 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 async def main():
     bot = Bot(token=BOT_TOKEN)
     dp = Dispatcher()
-    dp.include_router(router)
+    
+    dp.include_router(retrack_router)
+    dp.include_router(search_router)
+    
     await bot.delete_webhook(drop_pending_updates=True)
     logging.info("Бот запущен")
     await dp.start_polling(bot)

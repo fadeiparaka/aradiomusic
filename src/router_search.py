@@ -1,16 +1,35 @@
 import asyncio
+import re
+
+import yt_dlp
 from aiogram import Router, F
-from aiogram.filters import CommandStart
+from aiogram.filters import CommandStart, Command
 from aiogram.types import (
     Message, CallbackQuery,
     InlineKeyboardMarkup, InlineKeyboardButton, FSInputFile
 )
+
 from src import config
 from src import state_manager as sm
+from src.config import (
+    MSG_YT_PLAYLIST_SENDING,
+    MSG_YT_PLAYLIST_DONE,
+    MSG_YT_PLAYLIST_STOPPED,
+    MSG_YT_VIDEO_SENDING,
+    MSG_YT_VIDEO_FAILED,
+    MSG_STOP_NO_TASK,
+    MSG_STOP_OK,
+    ALBUM_SEND_DELAY,
+)
 from src import deezer as sc
 from src.downloader import download_track, delete_file
 
+
 router = Router()
+
+YOUTUBE_URL_RE = re.compile(
+    r"^(https?://)?(www\.)?(youtube\.com|youtu\.be)/\S+$"
+)
 
 
 async def _typing_loop(bot, chat_id: int, stop_event: asyncio.Event):
@@ -130,15 +149,194 @@ async def _delete_results_message(cb: CallbackQuery) -> None:
             pass
 
 
-# ─── Хендлеры ────────────────────────────────────────────────────────────────
+# ─── Команды / старт ────────────────────────────────────────────────────────
+
 
 @router.message(CommandStart())
 async def cmd_start(message: Message):
     await message.answer(config.MSG_WELCOME, parse_mode="HTML")
 
 
+@router.message(Command("stop"))
+async def handle_stop(message: Message):
+    chat_id = message.chat.id
+    if not sm.should_stop(chat_id):
+        sm.set_stop(chat_id)
+        await message.answer(MSG_STOP_OK, parse_mode="HTML")
+    else:
+        await message.answer(MSG_STOP_NO_TASK, parse_mode="HTML")
+
+
+# ─── YouTube: голый URL ─────────────────────────────────────────────────────
+
+
+@router.message(F.text.regexp(r"^(https?://)?(www\.)?(youtube\.com|youtu\.be)/\S+$"))
+async def handle_youtube_url(message: Message):
+    text = (message.text or "").strip()
+    url = text
+
+    if "list=" in url:
+        await handle_youtube_playlist(message, url)
+    else:
+        await handle_youtube_video(message, url)
+
+
+async def handle_youtube_video(message: Message, url: str):
+    loading_msg = await message.answer(MSG_YT_VIDEO_SENDING, parse_mode="HTML")
+    try:
+        ydl_opts = {
+            "format": "bestaudio/best",
+            "outtmpl": "aradio_music/tmp/%(id)s.%(ext)s",
+            "noplaylist": True,
+            "quiet": True,
+            "no_warnings": True,
+            "verbose": False,
+            "postprocessors": [
+                {
+                    "key": "FFmpegExtractAudio",
+                    "preferredcodec": "mp3",
+                    "preferredquality": "192",
+                }
+            ],
+        }
+
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=True)
+            base_path = ydl.prepare_filename(info)
+
+        if base_path.rsplit(".", 1)[-1] != "mp3":
+            file_path = base_path.rsplit(".", 1)[0] + ".mp3"
+        else:
+            file_path = base_path
+
+        title = info.get("track") or info.get("title") or "Audio"
+        performer = info.get("artist") or info.get("uploader") or info.get("channel") or ""
+
+        await message.bot.send_chat_action(message.chat.id, "upload_audio")
+        await message.answer_audio(
+            audio=FSInputFile(file_path),
+            title=title,
+            performer=performer,
+            thumbnail=FSInputFile(config.THUMB_PATH),
+        )
+
+        delete_file(file_path) 
+
+    except Exception as e:
+        await message.answer(
+            f"<b>Ошибка при отправке файла:</b> {e}",
+            parse_mode="HTML",
+        )
+        raise
+    finally:
+        try:
+            await loading_msg.delete()
+        except Exception:
+            pass
+
+async def handle_youtube_playlist(message: Message, url: str):
+    chat_id = message.chat.id
+    sm.clear_stop(chat_id)
+
+    info_msg = await message.answer(MSG_YT_PLAYLIST_SENDING, parse_mode="HTML")
+
+    stop_event = asyncio.Event()
+    typing_task = asyncio.create_task(
+        _typing_loop(message.bot, message.chat.id, stop_event)
+    )
+
+    try:
+        with yt_dlp.YoutubeDL({"extract_flat": False, "quiet": True}) as ydl:
+            info = ydl.extract_info(url, download=False)
+
+        entries = info.get("entries") or []
+        for entry in entries:
+            if sm.should_stop(chat_id):
+                break
+
+            video_url = entry.get("webpage_url")
+            if not video_url:
+                continue
+
+            try:
+                ydl_opts_dl = {
+                    "format": "bestaudio/best",
+                    "outtmpl": "aradio_music/tmp/%(id)s.%(ext)s",
+                    "noplaylist": True,
+                    "quiet": True,
+                    "no_warnings": True,
+                    "verbose": False,
+                    "postprocessors": [
+                        {
+                            "key": "FFmpegExtractAudio",
+                            "preferredcodec": "mp3",
+                            "preferredquality": "192",
+                        }
+                    ],
+                }
+                with yt_dlp.YoutubeDL(ydl_opts_dl) as ydl:
+                    vinfo = ydl.extract_info(video_url, download=True)
+                    base_path = ydl.prepare_filename(vinfo)
+
+                if base_path.rsplit(".", 1)[-1] != "mp3":
+                    file_path = base_path.rsplit(".", 1)[0] + ".mp3"
+                else:
+                    file_path = base_path
+
+                title = vinfo.get("track") or vinfo.get("title") or entry.get("title") or "Audio"
+                performer = (
+                    vinfo.get("artist")
+                    or vinfo.get("uploader")
+                    or vinfo.get("channel")
+                    or entry.get("uploader")
+                    or entry.get("channel")
+                    or ""
+                )
+
+                await message.bot.send_chat_action(message.chat.id, "upload_audio")
+                await message.answer_audio(
+                    audio=FSInputFile(file_path),
+                    title=title,
+                    performer=performer,
+                    thumbnail=FSInputFile(config.THUMB_PATH),
+                )
+
+                delete_file(file_path) 
+
+                await asyncio.sleep(ALBUM_SEND_DELAY)
+            except Exception as e:
+                await message.answer(
+                    f"<b>Ошибка при скачивании трека плейлиста:</b> {e}",
+                    parse_mode="HTML",
+                )
+                continue
+    finally:
+        stop_event.set()
+        typing_task.cancel()
+        try:
+            await info_msg.delete()
+        except Exception:
+            pass
+
+        stopped = sm.should_stop(chat_id)
+        sm.clear_stop(chat_id)
+
+        if stopped:
+            await message.answer(MSG_YT_PLAYLIST_STOPPED, parse_mode="HTML")
+        else:
+            await message.answer(MSG_YT_PLAYLIST_DONE, parse_mode="HTML")
+
+# ─── Поиск по тексту ────────────────────────────────────────────────────────
+
+
 @router.message(F.text)
 async def handle_search(message: Message):
+    # игнорируем команды и YouTube‑URL
+    if message.text.startswith("/"):
+        return
+    if YOUTUBE_URL_RE.match(message.text.strip()):
+        return
+
     query = message.text.strip()
     loading = await message.answer(
         config.MSG_SEARCHING.format(query=query), parse_mode="HTML"
@@ -152,6 +350,9 @@ async def handle_search(message: Message):
             state["results_message_id"] = sent.message_id
     else:
         await message.answer(text, parse_mode="HTML")
+
+
+# ─── Callbacks ──────────────────────────────────────────────────────────────
 
 
 @router.callback_query(F.data.startswith("type:"))
@@ -264,16 +465,19 @@ async def handle_album(cb: CallbackQuery):
         title = track.get("title", "Unknown")
         path = await download_track(track_id, title=title, artist=album_artist)
         if path:
-            await cb.message.answer_audio(
+            sent = await cb.message.answer_audio(
                 FSInputFile(path),
                 title=title,
                 performer=album_artist,
                 thumbnail=FSInputFile(config.THUMB_PATH),
             )
             delete_file(path)
+            sm.add_track_to_buffer(
+                cb.message.chat.id, sent.message_id, title, album_artist, track_id
+            )
+
         await asyncio.sleep(config.ALBUM_SEND_DELAY)
 
-    # один раз останавливаем typing и удаляем loading
     stop_event.set()
     typing_task.cancel()
     try:
@@ -286,7 +490,6 @@ async def handle_album(cb: CallbackQuery):
         parse_mode="HTML",
     )
 
-    # чистим сообщение с результатами через общий хелпер
     await _delete_results_message(cb)
 
 
@@ -321,13 +524,21 @@ async def handle_track(cb: CallbackQuery):
         await cb.message.answer(config.MSG_NO_STREAM, parse_mode="HTML")
         return
 
-    await cb.message.answer_audio(
+    sent = await cb.message.answer_audio(
         FSInputFile(path),
         title=title,
         performer=artist,
         thumbnail=FSInputFile(config.THUMB_PATH),
     )
     delete_file(path)
+
+    sm.add_track_to_buffer(
+        cb.message.chat.id,
+        sent.message_id,
+        title,
+        artist,
+        track_id,
+    )
 
     state = sm.get_state(cb.from_user.id)
     if state and state.get("results_message_id"):
@@ -336,6 +547,7 @@ async def handle_track(cb: CallbackQuery):
             state["results_message_id"] = None
         except Exception:
             pass
+
 
 @router.callback_query(F.data == "noop")
 async def handle_noop(cb: CallbackQuery):
