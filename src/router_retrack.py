@@ -23,7 +23,7 @@ MSG_RETRACK_NO_RESULTS = "❌ Ниче не нашёл."
 MSG_RETRACK_DOWNLOADING = "Ща-ща..."
 
 
-def _search_youtube_candidates(query: str, limit: int = 50) -> list[dict]:
+def _search_youtube_candidates(query: str, limit: int = 5) -> list[dict]:
     """Возвращает список кандидатов без скачивания."""
     info_opts = {
         "quiet": True,
@@ -40,13 +40,11 @@ def _search_youtube_candidates(query: str, limit: int = 50) -> list[dict]:
         logging.error("yt-dlp retrack search error: %s", e)
     return []
 
-
 def _format_duration(seconds) -> str:
     if not isinstance(seconds, (int, float)):
         return "?:??"
     m, s = divmod(int(seconds), 60)
     return f"{m}:{s:02d}"
-
 
 def _build_keyboard(candidates: list[dict], offset: int, chat_id: int, orig_msg_id: int) -> InlineKeyboardMarkup:
     page = candidates[offset:offset + 5]
@@ -63,14 +61,15 @@ def _build_keyboard(candidates: list[dict], offset: int, chat_id: int, orig_msg_
     nav = []
     if offset > 0:
         nav.append(InlineKeyboardButton(text="← Назад", callback_data=f"rtp:{orig_msg_id}:{offset - 5}"))
-    if offset + 5 < len(candidates):
+    # Показываем "Ещё" если страница полная — значит возможно есть ещё
+    if len(page) == 5:
         nav.append(InlineKeyboardButton(text="Ещё →", callback_data=f"rtp:{orig_msg_id}:{offset + 5}"))
     if nav:
         buttons.append(nav)
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
-
-# Временное хранилище кандидатов: {chat_id: {orig_msg_id: [candidates]}}
+# Изменяем структуру кеша: теперь хранит query + накопленные entries
+# {chat_id: {orig_msg_id: {"query": str, "entries": list}}}
 _candidates_cache: dict = {}
 
 
@@ -97,12 +96,13 @@ async def cmd_retrack(message: Message):
 
     title = track_data["title"]
     artist = track_data["artist"]
+    query = f"{artist} {title}"
 
     loading = await message.answer(MSG_RETRACK_SEARCHING, parse_mode="HTML")
 
     loop = asyncio.get_event_loop()
     candidates = await loop.run_in_executor(
-        None, _search_youtube_candidates, f"{artist} {title}"
+        None, _search_youtube_candidates, query, 5  # ← только первые 5
     )
 
     await loading.delete()
@@ -111,10 +111,13 @@ async def cmd_retrack(message: Message):
         await message.answer(MSG_RETRACK_NO_RESULTS, parse_mode="HTML")
         return
 
-    # Кешируем кандидатов
+    # Кешируем с запросом
     if message.chat.id not in _candidates_cache:
         _candidates_cache[message.chat.id] = {}
-    _candidates_cache[message.chat.id][orig_msg_id] = candidates
+    _candidates_cache[message.chat.id][orig_msg_id] = {
+        "query": query,
+        "entries": candidates,
+    }
 
     keyboard = _build_keyboard(candidates, offset=0, chat_id=message.chat.id, orig_msg_id=orig_msg_id)
 
@@ -124,31 +127,44 @@ async def cmd_retrack(message: Message):
         reply_markup=keyboard,
     )
 
-
 @router.callback_query(F.data.startswith("rtp:"))
 async def handle_retrack_page(cb: CallbackQuery):
-    """Пагинация кандидатов."""
+    """Пагинация кандидатов — догружает следующие 5 при необходимости."""
     _, orig_msg_id_str, offset_str = cb.data.split(":")
     orig_msg_id = int(orig_msg_id_str)
     offset = int(offset_str)
 
-    candidates = _candidates_cache.get(cb.message.chat.id, {}).get(orig_msg_id)
-    if not candidates:
+    cache = _candidates_cache.get(cb.message.chat.id, {}).get(orig_msg_id)
+    if not cache:
         await cb.answer("Сессия устарела, запусти /r заново.")
         return
+
+    entries = cache["entries"]
+    query = cache["query"]
+
+    # Если нужных записей ещё нет — догружаем
+    if len(entries) < offset + 5:
+        await cb.answer("Загружаю ещё…")
+        loop = asyncio.get_event_loop()
+        new_entries = await loop.run_in_executor(
+            None, _search_youtube_candidates, query, offset + 5
+        )
+        # Берём только новые (те, которых ещё нет)
+        if len(new_entries) > len(entries):
+            cache["entries"] = new_entries
+            entries = new_entries
 
     track_data = sm.get_track_from_buffer(cb.message.chat.id, orig_msg_id)
     title = track_data["title"] if track_data else "?"
     artist = track_data["artist"] if track_data else "?"
 
-    keyboard = _build_keyboard(candidates, offset=offset, chat_id=cb.message.chat.id, orig_msg_id=orig_msg_id)
+    keyboard = _build_keyboard(entries, offset=offset, chat_id=cb.message.chat.id, orig_msg_id=orig_msg_id)
     await cb.message.edit_text(
         MSG_RETRACK_HEADER.format(artist=artist, title=title),
         parse_mode="HTML",
         reply_markup=keyboard,
     )
     await cb.answer()
-
 
 @router.callback_query(F.data.startswith("rt:"))
 async def handle_retrack_pick(cb: CallbackQuery):
@@ -157,7 +173,7 @@ async def handle_retrack_pick(cb: CallbackQuery):
     orig_msg_id = int(orig_msg_id_str)
     idx = int(idx_str)
 
-    candidates = _candidates_cache.get(cb.message.chat.id, {}).get(orig_msg_id)
+    candidates = (_candidates_cache.get(cb.message.chat.id, {}).get(orig_msg_id) or {}).get("entries")
     if not candidates or idx >= len(candidates):
         await cb.answer("Сессия устарела, запусти /r заново.")
         return
