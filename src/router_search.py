@@ -387,7 +387,9 @@ async def handle_next(cb: CallbackQuery):
             cb.from_user.id, state["query"], state["search_type"], new_offset
         )
         await cb.message.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
-
+        new_state = sm.get_state(cb.from_user.id)
+        if new_state:
+            new_state["results_message_id"] = cb.message.message_id
 
 @router.callback_query(F.data == "page:prev")
 async def handle_prev(cb: CallbackQuery):
@@ -404,7 +406,9 @@ async def handle_prev(cb: CallbackQuery):
             cb.from_user.id, state["query"], state["search_type"], new_offset
         )
         await cb.message.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
-
+        new_state = sm.get_state(cb.from_user.id)
+        if new_state:
+            new_state["results_message_id"] = cb.message.message_id
 
 @router.callback_query(F.data == "back")
 async def handle_back(cb: CallbackQuery):
@@ -540,14 +544,11 @@ async def handle_track(cb: CallbackQuery):
         track_id,
     )
 
-    state = sm.get_state(cb.from_user.id)
-    if state and state.get("results_message_id"):
-        try:
-            await cb.message.bot.delete_message(cb.message.chat.id, state["results_message_id"])
-            state["results_message_id"] = None
-        except Exception:
-            pass
-
+    try:
+        await cb.message.delete()
+    except Exception:
+        pass
+    
 
 @router.callback_query(F.data == "noop")
 async def handle_noop(cb: CallbackQuery):
