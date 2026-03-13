@@ -23,7 +23,7 @@ MSG_WELCOME = (
 
 MSG_SEARCHING = "Ищу <b>{query}</b>..."
 MSG_NO_RESULTS = "Ничего не нашёл. Я тупой. Напиши конкретнее."
-MSG_YT_FALLBACK = "🔍 В Deezer не нашёл, вот варианты с YouTube:"
+MSG_YT_FALLBACK = "Ничё не нашёл. Ищи сам:"
 MSG_RESULTS_HEADER = "<b>{query}</b>:"
 MSG_ARTIST_HEADER = "Топ треки <b>{name}</b>:"
 MSG_DOWNLOADING = "Подожди, бля..."
