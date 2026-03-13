@@ -20,9 +20,17 @@ from src.config import (
     MSG_STOP_NO_TASK,
     MSG_STOP_OK,
     ALBUM_SEND_DELAY,
+    MSG_YT_FALLBACK,
 )
 from src import deezer as sc
 from src.downloader import download_track, delete_file
+from src.router_retrack import (
+    _search_youtube_candidates,
+    _build_keyboard,
+    _candidates_cache,
+    MSG_RETRACK_NO_RESULTS,
+    _preload_next_page, 
+)
 
 
 router = Router()
@@ -331,7 +339,6 @@ async def handle_youtube_playlist(message: Message, url: str):
 
 @router.message(F.text)
 async def handle_search(message: Message):
-    # игнорируем команды и YouTube‑URL
     if message.text.startswith("/"):
         return
     if YOUTUBE_URL_RE.match(message.text.strip()):
@@ -343,15 +350,48 @@ async def handle_search(message: Message):
     )
     text, keyboard = await _do_search(message.from_user.id, query, "track", 0)
     await loading.delete()
+
+    # Deezer нашёл — обычный флоу
     if keyboard:
         sent = await message.answer(text, reply_markup=keyboard, parse_mode="HTML")
         state = sm.get_state(message.from_user.id)
         if state:
             state["results_message_id"] = sent.message_id
-    else:
-        await message.answer(text, parse_mode="HTML")
+        return
 
+    # Deezer ничего не нашёл — ищем на YouTube
+    yt_loading = await message.answer(
+        config.MSG_SEARCHING.format(query=query), parse_mode="HTML"
+    )
+    loop = asyncio.get_event_loop()
+    candidates = await loop.run_in_executor(
+        None, _search_youtube_candidates, query, 5
+    )
+    await yt_loading.delete()
 
+    if not candidates:
+        await message.answer(MSG_RETRACK_NO_RESULTS, parse_mode="HTML")
+        return
+
+    # Кешируем и показываем клавиатуру
+    sent = await message.answer(MSG_YT_FALLBACK, parse_mode="HTML")
+    chat_id = message.chat.id
+    orig_msg_id = sent.message_id
+
+    if chat_id not in _candidates_cache:
+        _candidates_cache[chat_id] = {}
+    _candidates_cache[chat_id][orig_msg_id] = {
+        "query": query,
+        "entries": candidates,
+        "header": MSG_YT_FALLBACK, 
+    }
+
+    keyboard = _build_keyboard(candidates, offset=0, chat_id=chat_id, orig_msg_id=orig_msg_id)
+    await sent.edit_reply_markup(reply_markup=keyboard)
+
+    asyncio.create_task(
+        _preload_next_page(chat_id, orig_msg_id, query, len(candidates), 5)
+    )
 # ─── Callbacks ──────────────────────────────────────────────────────────────
 
 
@@ -548,7 +588,7 @@ async def handle_track(cb: CallbackQuery):
         await cb.message.delete()
     except Exception:
         pass
-    
+
 
 @router.callback_query(F.data == "noop")
 async def handle_noop(cb: CallbackQuery):
