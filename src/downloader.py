@@ -5,8 +5,6 @@ from typing import Optional
 from pathlib import Path
 import traceback
 
-from hitmo_retrack import download_from_hitmo_net
-
 from src import hitmos
 
 
@@ -99,22 +97,9 @@ async def download_track(
 ) -> Optional[str]:
     output_path = os.path.join(TMP_DIR, f"track_{track_id}")
     loop = asyncio.get_event_loop()
-
-    # 1. Пытаемся через старый hitmos
     local_path = await loop.run_in_executor(
         None, _download_sync, title, artist, output_path
     )
-
-    # 2. Если не вышло — fallback на hitmo.net
-    if not local_path:
-        logging.info(
-            "fallback: trying hitmo_net for '%s' - '%s'",
-            artist,
-            title,
-        )
-        local_path = await loop.run_in_executor(
-            None, download_from_hitmo_net, title, artist, output_path
-        )
 
     if not local_path:
         return None
